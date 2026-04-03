@@ -1,0 +1,425 @@
+name: 仓库全状态实时监控飞书通知
+on:
+  push:
+    branches: [ '**' ]
+    tags: [ '**' ]
+  create:
+  delete:
+  pull_request:
+    types: [opened, edited, closed, merged, reopened, assigned, unassigned, review_requested, review_request_removed, labeled, unlabeled, synchronize, locked, unlocked, converted_to_draft, ready_for_review, milestoned, demilestoned]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  issues:
+    types: [opened, edited, closed, reopened, assigned, unassigned, labeled, unlabeled, locked, unlocked, transferred, pinned, unpinned, milestoned, demilestoned]
+  issue_comment:
+    types: [created, edited, deleted]
+  release:
+    types: [published, unpublished, edited, deleted, prereleased, released]
+  watch:
+    types: [started]
+  fork:
+  discussion:
+    types: [created, edited, answered, closed, reopened, locked, unlocked, labeled, unlabeled, category_changed]
+  discussion_comment:
+    types: [created, edited, deleted]
+  member:
+    types: [added, removed, edited]
+  workflow_run:
+    workflows: ["*"]
+    types: [completed, requested, in_progress]
+  workflow_dispatch:
+  gollum:
+  page_build:
+  project:
+    types: [created, updated, closed, reopened, edited, deleted]
+  project_card:
+    types: [created, moved, edited, deleted, converted]
+  project_column:
+    types: [created, updated, moved, deleted]
+  check_run:
+    types: [created, rerequested, completed, requested_action]
+  check_suite:
+    types: [completed, requested, rerequested]
+  deployment:
+  deployment_status:
+  milestone:
+    types: [created, closed, opened, edited, deleted]
+  label:
+    types: [created, edited, deleted]
+
+jobs:
+  feishu-full-notify:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: 推送仓库状态通知到飞书
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          EVENT_NAME_RAW: ${{ github.event_name }}
+          EVENT_ACTION_RAW: ${{ github.event.action }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          OPERATOR: ${{ github.actor }}
+          EVENT_URL: ${{ github.event.html_url || github.server_url }}/${{ github.repository }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          # PR相关原生变量
+          PR_NUM: ${{ github.event.pull_request.number || '' }}
+          PR_TITLE: ${{ github.event.pull_request.title || '' }}
+          PR_STATE_RAW: ${{ github.event.pull_request.state || '' }}
+          PR_MERGED_RAW: ${{ github.event.pull_request.merged || 'false' }}
+          PR_SOURCE_BRANCH: ${{ github.event.pull_request.head.ref || '' }}
+          PR_TARGET_BRANCH: ${{ github.event.pull_request.base.ref || '' }}
+          PR_ASSIGNEE: ${{ github.event.pull_request.assignee.login || '未指派' }}
+          # Issue相关原生变量
+          ISSUE_NUM: ${{ github.event.issue.number || '' }}
+          ISSUE_TITLE: ${{ github.event.issue.title || '' }}
+          ISSUE_STATE_RAW: ${{ github.event.issue.state || '' }}
+          ISSUE_ASSIGNEE: ${{ github.event.issue.assignee.login || '未指派' }}
+          # 版本发布相关原生变量
+          RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+          RELEASE_NAME: ${{ github.event.release.name || '' }}
+          RELEASE_PRERELEASE_RAW: ${{ github.event.release.prerelease || 'false' }}
+          # 工作流相关原生变量
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name || '' }}
+          WORKFLOW_STATUS_RAW: ${{ github.event.workflow_run.status || '' }}
+          WORKFLOW_RESULT_RAW: ${{ github.event.workflow_run.conclusion || '' }}
+          # 代码提交相关原生变量
+          COMMIT_ID: ${{ github.event.head_commit.id || '' }}
+          COMMIT_MSG: ${{ github.event.head_commit.message || '' }}
+          COMMIT_AUTHOR: ${{ github.event.head_commit.author.name || '' }}
+          # 仓库数据原生变量
+          STAR_COUNT: ${{ github.event.repository.stargazers_count || '0' }}
+          FORK_COUNT: ${{ github.event.repository.forks_count || '0' }}
+        run: |
+          set +e
+          echo "===== 开始执行通知脚本 ====="
+          
+          # ===================== 1. 核心变量修复 =====================
+          # 时间改为CST（中国标准时间）
+          EVENT_TIME=$(TZ='Asia/Shanghai' date +"%Y-%m-%d %H:%M:%S CST")
+          # 提交短ID处理
+          COMMIT_SHORT_ID=$(echo "$COMMIT_ID" | cut -c 1-8)
+          # 提交信息取第一行，清除多余换行
+          COMMIT_MSG_SIMPLE=$(echo "$COMMIT_MSG" | head -n 1 | tr -d '\n\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
+          
+          # 事件类型全中文翻译
+          case "$EVENT_NAME_RAW" in
+            "push") EVENT_NAME="代码推送" ;;
+            "pull_request") EVENT_NAME="合并请求" ;;
+            "issues") EVENT_NAME="问题工单" ;;
+            "release") EVENT_NAME="版本发布" ;;
+            "workflow_run") EVENT_NAME="工作流执行" ;;
+            "watch") EVENT_NAME="标星操作" ;;
+            "fork") EVENT_NAME="复刻仓库" ;;
+            "member") EVENT_NAME="成员权限" ;;
+            "gollum") EVENT_NAME="文档更新" ;;
+            "label") EVENT_NAME="标签管理" ;;
+            "milestone") EVENT_NAME="里程碑" ;;
+            "create") EVENT_NAME="创建分支/标签" ;;
+            "delete") EVENT_NAME="删除分支/标签" ;;
+            *) EVENT_NAME="仓库操作" ;;
+          esac
+          
+          # 事件动作全中文翻译
+          case "$EVENT_ACTION_RAW" in
+            "opened") EVENT_ACTION="已创建" ;;
+            "edited") EVENT_ACTION="已编辑" ;;
+            "closed") EVENT_ACTION="已关闭" ;;
+            "merged") EVENT_ACTION="已合并" ;;
+            "reopened") EVENT_ACTION="已重开" ;;
+            "assigned") EVENT_ACTION="已指派" ;;
+            "unassigned") EVENT_ACTION="已取消指派" ;;
+            "labeled") EVENT_ACTION="已添加标签" ;;
+            "unlabeled") EVENT_ACTION="已移除标签" ;;
+            "submitted") EVENT_ACTION="已提交审核" ;;
+            "dismissed") EVENT_ACTION="已驳回审核" ;;
+            "created") EVENT_ACTION="已创建" ;;
+            "deleted") EVENT_ACTION="已删除" ;;
+            "published") EVENT_ACTION="已发布" ;;
+            "unpublished") EVENT_ACTION="已撤回" ;;
+            "prereleased") EVENT_ACTION="预发布" ;;
+            "released") EVENT_ACTION="正式发布" ;;
+            "started") EVENT_ACTION="已标星" ;;
+            "added") EVENT_ACTION="已添加" ;;
+            "removed") EVENT_ACTION="已移除" ;;
+            "completed") EVENT_ACTION="已完成" ;;
+            "requested") EVENT_ACTION="已触发" ;;
+            "in_progress") EVENT_ACTION="运行中" ;;
+            "success") EVENT_ACTION="执行成功" ;;
+            "failure") EVENT_ACTION="执行失败" ;;
+            *) EVENT_ACTION=$EVENT_ACTION_RAW ;;
+          esac
+          
+          # 状态值全中文翻译
+          PR_STATE_CN=$(echo "$PR_STATE_RAW" | sed 's/open/开启/g; s/closed/关闭/g; s/""//g')
+          PR_MERGED_CN=$(echo "$PR_MERGED_RAW" | sed 's/true/是/g; s/false/否/g; s/""//g')
+          ISSUE_STATE_CN=$(echo "$ISSUE_STATE_RAW" | sed 's/open/开启/g; s/closed/关闭/g; s/""//g')
+          RELEASE_PRERELEASE_CN=$(echo "$RELEASE_PRERELEASE_RAW" | sed 's/true/是/g; s/false/否/g; s/""//g')
+          WORKFLOW_STATUS_CN=$(echo "$WORKFLOW_STATUS_RAW" | sed 's/in_progress/运行中/g; s/completed/已完成/g; s/requested/已触发/g; s/""//g')
+          WORKFLOW_RESULT_CN=$(echo "$WORKFLOW_RESULT_RAW" | sed 's/success/成功/g; s/failure/失败/g; s/cancelled/已取消/g; s/unknown/未知/g; s/""//g')
+
+          # ===================== 2. 事件分级与卡片配置 =====================
+          # 卡片配色与事件级别
+          if [[ "$EVENT_NAME_RAW" == "member" && "$EVENT_ACTION_RAW" == "removed" ]]; then
+            CARD_COLOR="red"
+            EVENT_LEVEL="⚠️ 高优先级事件"
+          elif [[ "$EVENT_NAME_RAW" == "pull_request" && "$EVENT_ACTION_RAW" == "merged" || "$EVENT_NAME_RAW" == "release" && "$EVENT_ACTION_RAW" == "published" ]]; then
+            CARD_COLOR="green"
+            EVENT_LEVEL="✅ 核心里程碑事件"
+          elif [[ "$EVENT_NAME_RAW" == "push" || "$EVENT_NAME_RAW" == "issues" || "$EVENT_NAME_RAW" == "pull_request" ]]; then
+            CARD_COLOR="blue"
+            EVENT_LEVEL="📋 常规业务事件"
+          else
+            CARD_COLOR="grey"
+            EVENT_LEVEL="🔔 细粒度状态变更"
+          fi
+
+          # 卡片默认配置（核心修复：字段间换行，无多余空行）
+          CARD_TITLE="🔔 仓库状态发生变更"
+          CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **📋 事件类型**：$EVENT_NAME:$EVENT_ACTION
+          **📊 仓库数据**：⭐ $STAR_COUNT 标星 | 🍴 $FORK_COUNT 复刻
+          **📅 事件时间**：$EVENT_TIME"
+                    BUTTON_TEXT="查看详情"
+          
+                    # ===================== 3. 分事件定制内容（字段换行+无空行）=====================
+                    case "$EVENT_NAME_RAW" in
+                      "push")
+                        CARD_TITLE="📦 代码推送事件"
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **🌿 目标分支**：$BRANCH_NAME
+          **🔢 提交ID**：$COMMIT_SHORT_ID
+          **📝 提交信息**：$COMMIT_MSG_SIMPLE
+          **✍️ 提交作者**：$COMMIT_AUTHOR
+          **📅 事件时间**：$EVENT_TIME"
+                        BUTTON_TEXT="查看提交详情"
+                        ;;
+                      "pull_request")
+                        if [ "$PR_MERGED_RAW" = "true" ]; then
+                          CARD_TITLE="✅ 合并请求已合并"
+                          CARD_COLOR="green"
+                        elif [ "$EVENT_ACTION_RAW" = "closed" ]; then
+                          CARD_TITLE="❌ 合并请求已关闭"
+                          CARD_COLOR="orange"
+                        elif [ "$EVENT_ACTION_RAW" = "opened" ]; then
+                          CARD_TITLE="🔀 新增合并请求待处理"
+                          CARD_COLOR="blue"
+                        else
+                          CARD_TITLE="🔀 合并请求状态变更"
+                        fi
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **🔢 合并请求编号**：#$PR_NUM
+          **📝 合并请求标题**：$PR_TITLE
+          **🌿 源分支**：$PR_SOURCE_BRANCH
+          **🎯 目标分支**：$PR_TARGET_BRANCH
+          **📄 合并请求状态**：$PR_STATE_CN
+          **🔄 当前动作**：$EVENT_ACTION
+          **✅ 是否已合并**：$PR_MERGED_CN
+          **👥 指派人**：$PR_ASSIGNEE
+          **📅 事件时间**：$EVENT_TIME"
+                        BUTTON_TEXT="查看合并请求详情"
+                        ;;
+                      "issues")
+                        if [ "$EVENT_ACTION_RAW" = "closed" ]; then
+                          CARD_TITLE="✅ 问题工单已关闭"
+                          CARD_COLOR="green"
+                        elif [ "$EVENT_ACTION_RAW" = "opened" ]; then
+                          CARD_TITLE="📋 新增问题工单待处理"
+                          CARD_COLOR="orange"
+                        else
+                          CARD_TITLE="📋 问题工单状态变更通知"
+                        fi
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **🔢 问题工单编号**：#$ISSUE_NUM
+          **📝 问题工单标题**：$ISSUE_TITLE
+          **📄 问题工单状态**：$ISSUE_STATE_CN
+          **🔄 当前动作**：$EVENT_ACTION
+          **👥 指派人**：$ISSUE_ASSIGNEE
+          **📅 事件时间**：$EVENT_TIME"
+                        BUTTON_TEXT="查看问题工单详情"
+                        ;;
+                      "release")
+                        if [ "$EVENT_ACTION_RAW" = "published" ]; then
+                          CARD_TITLE="🏷️ 新版本已发布"
+                          CARD_COLOR="green"
+                        else
+                          CARD_TITLE="🏷️ 版本发布事件"
+                        fi
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **🏷️ 版本标签**：$RELEASE_TAG
+          **📝 版本名称**：$RELEASE_NAME
+          **🔄 当前动作**：$EVENT_ACTION
+          **⚠️ 是否预发布**：$RELEASE_PRERELEASE_CN
+          **📅 事件时间**：$EVENT_TIME"
+                        BUTTON_TEXT="查看版本详情"
+                        ;;
+                      "workflow_run")
+                        if [ "$WORKFLOW_RESULT_RAW" = "success" ]; then
+                          CARD_TITLE="✅ 工作流执行成功"
+                          CARD_COLOR="green"
+                        elif [ "$WORKFLOW_RESULT_RAW" = "failure" ]; then
+                          CARD_TITLE="❌ 工作流执行失败"
+                          CARD_COLOR="red"
+                          EVENT_LEVEL="⚠️ 高优先级事件"
+                        else
+                          CARD_TITLE="⚙️ 工作流执行事件"
+                        fi
+                        # 核心修复：工作流字段单独处理，确保换行且无空行
+                        WORKFLOW_NAME_CLEAN=$(echo "$WORKFLOW_NAME" | tr -d '\n\r' | sed 's/^[ \t]*//;s/[ \t]*$//')
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **📝 工作流名称**：$WORKFLOW_NAME_CLEAN
+          **📊 执行状态**：$WORKFLOW_STATUS_CN
+          **📄 执行结果**：$WORKFLOW_RESULT_CN
+          **🔄 当前动作**：$EVENT_ACTION
+          **📅 事件时间**：$EVENT_TIME"
+                        BUTTON_TEXT="查看执行日志"
+                        ;;
+                      "watch")
+                        CARD_TITLE="⭐ 仓库收到新标星"
+                        CARD_COLOR="yellow"
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作用户**：$OPERATOR
+          **💬 事件说明**：用户对仓库进行了标星操作
+          **📊 当前标星数**：$STAR_COUNT
+          **📅 事件时间**：$EVENT_TIME"
+                        BUTTON_TEXT="查看用户主页"
+                        ;;
+                      "fork")
+                        CARD_TITLE="🍴 仓库被复刻"
+                        CARD_COLOR="turquoise"
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作用户**：$OPERATOR
+          **💬 事件说明**：用户复刻了当前项目
+          **📊 当前复刻数**：$FORK_COUNT
+          **📅 事件时间**：$EVENT_TIME"
+                        BUTTON_TEXT="查看复刻仓库"
+                        ;;
+                      "member")
+                        CARD_TITLE="👥 仓库成员权限变更"
+                        if [ "$EVENT_ACTION_RAW" = "removed" ]; then
+                          CARD_COLOR="red"
+                          EVENT_LEVEL="⚠️ 高优先级事件"
+                        fi
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **🔄 事件类型**：$EVENT_NAME:$EVENT_ACTION
+          **💬 事件说明**：仓库成员权限发生变更，请确认是否为合规操作
+          **📅 事件时间**：$EVENT_TIME"
+                        BUTTON_TEXT="查看权限设置"
+                        ;;
+                      "gollum")
+                        CARD_TITLE="📖 文档页面更新"
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **💬 事件说明**：仓库文档页面发生了创建/更新操作
+          **📅 事件时间**：$EVENT_TIME"
+                        ;;
+                      "label")
+                        CARD_TITLE="🏷️ 仓库标签变更"
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **🔄 事件动作**：$EVENT_ACTION
+          **💬 事件说明**：仓库标签发生了创建/编辑/删除操作
+          **📅 事件时间**：$EVENT_TIME"
+                        ;;
+                      "milestone")
+                        CARD_TITLE="🎯 项目里程碑变更"
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **🔄 事件动作**：$EVENT_ACTION
+          **💬 事件说明**：项目里程碑发生了变更
+          **📅 事件时间**：$EVENT_TIME"
+                        ;;
+                      "create")
+                        CARD_TITLE="🌿 分支/标签已创建"
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **🎯 操作目标**：$BRANCH_NAME
+          **💬 事件说明**：新建了分支/标签
+          **📅 事件时间**：$EVENT_TIME"
+                        ;;
+                      "delete")
+                        CARD_TITLE="🗑️ 分支/标签已删除"
+                        CARD_CONTENT="**📦 仓库名称**：$REPO_FULL_NAME
+          **👤 操作人**：$OPERATOR
+          **🎯 操作目标**：$BRANCH_NAME
+          **💬 事件说明**：删除了分支/标签
+          **📅 事件时间**：$EVENT_TIME"
+                        ;;
+          esac
+
+          # ===================== 4. 生成飞书卡片JSON（消除多余空行）=====================
+          echo "正在生成飞书卡片JSON..."
+          # 清除内容中的多余空行和首尾空格
+          CARD_CONTENT_CLEAN=$(echo "$CARD_CONTENT" | sed '/^$/d' | sed 's/^[ \t]*//;s/[ \t]*$//')
+          
+          CARD_JSON=$(jq -n \
+            --arg card_title "$CARD_TITLE" \
+            --arg card_color "$CARD_COLOR" \
+            --arg card_content "$CARD_CONTENT_CLEAN" \
+            --arg event_level "$EVENT_LEVEL" \
+            --arg event_time "$EVENT_TIME" \
+            --arg button_text "$BUTTON_TEXT" \
+            --arg event_url "$EVENT_URL" \
+            '{
+              "msg_type": "interactive",
+              "card": {
+                "config": {
+                  "wide_screen_mode": true,
+                  "enable_forward": true
+                },
+                "header": {
+                  "title": {
+                    "tag": "plain_text",
+                    "content": $card_title
+                  },
+                  "template": $card_color
+                },
+                "elements": [
+                  {
+                    "tag": "div",
+                    "text": {
+                      "tag": "lark_md",
+                      "content": $card_content
+                    }
+                  },
+                  {
+                    "tag": "hr"
+                  },
+                  {
+                    "tag": "action",
+                    "actions": [
+                      {
+                        "tag": "button",
+                        "text": {
+                          "tag": "plain_text",
+                          "content": $button_text
+                        },
+                        "url": $event_url,
+                        "type": "primary"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }')
+
+          # 调试日志
+          echo "生成的卡片JSON：$CARD_JSON"
+
+          # ===================== 5. 发送请求到飞书 =====================
+          echo -e "\n===== 开始发送飞书通知 ====="
+          RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d "$CARD_JSON" \
+            "$FEISHU_WEBHOOK")
+          
+          echo "飞书接口返回结果：$RESPONSE"
+          echo -e "===== 通知发送完成 ====="
